@@ -1,0 +1,91 @@
+# モデルの保存
+# Hugging Face Hubにログイン
+from huggingface_hub import login
+login(token="YOUR TOKEN")
+
+# リポジトリの作成
+from huggingface_hub import HfApi
+repo_name = "ShotaSato0916/wikipedia-datasets-embeddings-ja-checkpoint"
+api = HfApi()
+api.create_repo(repo_id=repo_name, exist_ok=True)
+
+# 特定のチェックポイントファイルをアップロード
+import os
+from huggingface_hub import HfApi
+
+# ローカルのチェックポイントディレクトリ
+local_checkpoint_dir = 'my_model_ja/'
+
+# アップロードする特定のチェックポイントファイル
+checkpoint_filename = 'multilingual-e5-epoch=00-val_loss=0.00-ja.ckpt'
+local_checkpoint_file = os.path.join(local_checkpoint_dir, checkpoint_filename)
+
+# ファイルをアップロード
+api.upload_file(
+    path_or_fileobj=local_checkpoint_file,
+    path_in_repo=checkpoint_filename,
+    repo_id=repo_name,
+    repo_type="model"
+)
+
+print(f"チェックポイントファイル {checkpoint_filename} がリポジトリ {repo_name} にアップロードされました。")
+
+# モデルのロード
+import torch
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer, AutoModel
+from datasets import load_dataset
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import WandbLogger
+import requests
+import os
+
+class MultilingualE5Regressor_ja(pl.LightningModule):
+    def __init__(self):
+        super(MultilingualE5Regressor_ja, self).__init__()
+        self.model_ja = AutoModel.from_pretrained('intfloat/multilingual-e5-large')
+
+    def forward(self, input_ids_ja, attention_mask_ja):
+        outputs_ja = self.model_ja(input_ids=input_ids_ja, attention_mask=attention_mask_ja)
+        return outputs_ja.last_hidden_state.mean(axis=1)  # [CLS]トークンの出力
+    
+    def training_step(self, batch_ja, batch_idx_ja):
+        input_ids_ja = batch_ja['input_ids']
+        attention_mask_ja = batch_ja['attention_mask']
+        emb_ja = batch_ja['emb']
+
+        outputs_ja = self(input_ids_ja, attention_mask_ja)
+        loss_ja = torch.nn.functional.mse_loss(outputs_ja, emb_ja)
+        self.log('train_loss', loss_ja)
+        return loss_ja
+
+    def validation_step(self, batch_ja, batch_idx_ja):
+        input_ids_ja = batch_ja['input_ids']
+        attention_mask_ja = batch_ja['attention_mask']
+        emb_ja = batch_ja['emb']
+
+        outputs_ja = self(input_ids_ja, attention_mask_ja)
+        loss_ja = torch.nn.functional.mse_loss(outputs_ja, emb_ja)
+        self.log('val_loss', loss_ja)
+        return loss_ja
+
+    def configure_optimizers(self):
+        return torch.optim.AdamW(self.parameters(), lr=1e-5)
+
+# モデルのダウンロードと保存
+model_url = 'https://huggingface.co/ShotaSato0916/wikipedia-datasets-embeddings-ja-checkpoint/resolve/main/multilingual-e5-epoch=00-val_loss=0.00-ja.ckpt'
+local_model_path = 'multilingual-e5-epoch=00-val_loss=0.00-ja.ckpt'
+
+if not os.path.exists(local_model_path):
+    response = requests.get(model_url)
+    with open(local_model_path, 'wb') as f:
+        f.write(response.content)
+
+# モデルのロード
+model_ja = MultilingualE5Regressor_ja.load_from_checkpoint(local_model_path)
+
+# トークナイザーのロード
+tokenizer = AutoTokenizer.from_pretrained('intfloat/multilingual-e5-large')
+
